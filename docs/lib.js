@@ -1,4 +1,4 @@
-/*
+﻿/*
  * BibLib — pure logic functions for BibTeX Verifier.
  * Works as a browser global (window.BibLib) and as a Node.js module.
  */
@@ -203,6 +203,89 @@
   }
 
   // ─── Fuzzy matching ──────────────────────────────────────────────────
+  // --- Bib style normalization ---------------------------------------
+  const CONFERENCE_ENTRY_TYPES = new Set(["inproceedings", "conference", "proceedings"]);
+  const JOURNAL_ENTRY_TYPES = new Set(["article", "periodical"]);
+
+  /**
+   * Split a BibTeX author string into author parts, dropping explicit
+   * truncation markers such as "and others" and "et al.".
+   */
+  function authorParts(authorStr) {
+    if (!authorStr) return [];
+    return String(authorStr)
+      .split(/\s+and\s+/i)
+      .map(part => part.trim())
+      .filter(part => part && !/^(?:others|et\.?\s+al\.?)$/i.test(part));
+  }
+
+  /**
+   * Replace an explicitly truncated author list with a complete list from a
+   * verified record when the record is clearly the same author list plus the
+   * omitted authors. This never invents authors.
+   */
+  function completeAuthors(entry, found) {
+    const out = { ...entry };
+    const foundAuthor = found && found.author ? found.author : "";
+    const parts = authorParts(out.author);
+
+    if (!parts.length) {
+      if (foundAuthor && !/\\band\\s+others\\b|\\bet\\.?\\s+al\\.?/i.test(foundAuthor)) out.author = foundAuthor;
+      return out;
+    }
+
+    const rawParts = String(out.author).split(/\s+and\s+/i).filter(part => part.trim());
+    const truncated = parts.length !== rawParts.length;
+    if (!truncated || !foundAuthor) return out;
+
+    const foundParts = authorParts(foundAuthor);
+    const origLastNames = new Set(extractLastNames(parts.join(" and ")));
+    const foundLastNames = new Set(extractLastNames(foundAuthor));
+    const complete =
+      foundParts.length >= parts.length &&
+      [...origLastNames].every(name => foundLastNames.has(name));
+    if (complete) out.author = foundAuthor;
+    return out;
+  }
+
+  /**
+   * Apply the requested bibliography style:
+   * - use abbreviations for common venues, but leave rare venues unchanged;
+   * - conferences keep author, title, booktitle, and year;
+   * - journals keep author, title, journal, year, volume, number, and pages;
+   * - remove every other field.
+   */
+  function applyBibStyle(entry) {
+    const out = { ...entry };
+    const type = (out.ENTRYTYPE || "misc").toLowerCase();
+    const isConference = CONFERENCE_ENTRY_TYPES.has(type);
+    const isJournal = JOURNAL_ENTRY_TYPES.has(type);
+
+    if (isConference) {
+      if (!out.booktitle && out.journal) out.booktitle = out.journal;
+      delete out.journal;
+      delete out.pages;
+    } else if (isJournal) {
+      if (!out.journal && out.booktitle) out.journal = out.booktitle;
+      delete out.booktitle;
+    }
+
+    if (out.booktitle) out.booktitle = abbreviateVenue(out.booktitle);
+    if (out.journal) out.journal = abbreviateVenue(out.journal);
+
+    if (isConference || isJournal) {
+      const allowed = new Set(isConference
+        ? ["author", "title", "booktitle", "year"]
+        : ["author", "title", "journal", "year", "volume", "number", "pages"]);
+      for (const key of Object.keys(out)) {
+        if (key === "ENTRYTYPE" || key === "ID" || key.startsWith("_")) continue;
+        if (!allowed.has(key)) delete out[key];
+      }
+    }
+
+    return out;
+  }
+
   function tokenSortRatio(a, b) {
     if (typeof fuzzball !== "undefined") return fuzzball.token_sort_ratio(a, b);
     a = a.toLowerCase(); b = b.toLowerCase();
@@ -586,7 +669,8 @@
   function abbreviateVenue(name) {
     if (!name) return name;
     const key = name.toLowerCase().replace(/[^a-z0-9\s&,]/g, "").trim();
-    for (const [full, abbr] of Object.entries(VENUE_ABBREVIATIONS)) {
+    for (const [full, abbr] of Object.entries(VENUE_ABBREVIATIONS)
+      .sort(([a], [b]) => b.length - a.length)) {
       if (key.includes(full)) return abbr;
     }
     return name;
@@ -733,6 +817,8 @@
   exports.bestMatch = bestMatch;
   exports.abbreviateVenue = abbreviateVenue;
   exports.expandVenue = expandVenue;
+  exports.completeAuthors = completeAuthors;
+  exports.applyBibStyle = applyBibStyle;
   exports.cleanNote = cleanNote;
   exports.cleanEntryNotes = cleanEntryNotes;
   exports.NOTE_JUNK_KEYS = NOTE_JUNK_KEYS;

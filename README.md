@@ -1,4 +1,4 @@
-<div align="center">
+﻿<div align="center">
 
 # BibTeX Verifier
 
@@ -46,7 +46,7 @@ Runs **100% in your browser** — no install, no server, no account. Only paper 
 - **Hallucination detection** — titles that don’t exist in major indexes
 - **Pill-style diffs** — choose your text vs. suggested metadata per field
 - **Live BibTeX preview** with diff highlighting; **copy** or **download** the final file
-- **Max authors** truncation for long author lists (plus peer-reviewed venue preference, dedup, optional filters)
+- **Full author lists** — replaces `and others` from verified records when possible
 - **Clean notes** — strip reference-manager bookkeeping (`Read_Status`, `ZSCC`, …) from `note` / `annote`
 - **Dark / light** theme
 - **Quick search shortcuts** on each card (Scholar, CrossRef, DBLP, …)
@@ -61,6 +61,8 @@ Upload or paste .bib → Parse entries → For each entry:
 → Compare fields → Verified / Auto-updated / Needs review / Not found
 → You edit choices → Export corrected .bib
 ```
+
+**Bib style export:** Conferences keep author, title, booktitle, and year. Journals keep author, title, journal, year, volume, number, and pages. Common venues use abbreviations, rare venues stay unchanged, and every other field is removed.
 
 **Statuses:** **Verified** (matches online record) · **Auto-updated** (same paper, metadata differs) · **Needs review** (weak title match — possible typo or fake cite) · **Not found** (no index hit).
 

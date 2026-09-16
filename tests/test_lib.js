@@ -213,6 +213,63 @@ test("round-trips parse → serialize", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════
+console.log("\n── applyBibStyle ──");
+
+test("keeps only conference fields and abbreviates common venues", () => {
+  const entry = {
+    ENTRYTYPE: "inproceedings",
+    ID: "vaswani2017",
+    author: "Vaswani, Ashish",
+    title: "Attention Is All You Need",
+    booktitle: "Advances in Neural Information Processing Systems",
+    year: "2017",
+    pages: "5998-6008",
+    doi: "10.5555/3295222",
+  };
+  const out = lib.applyBibStyle(entry);
+  assert.deepStrictEqual(Object.keys(out).sort(), ["ENTRYTYPE", "ID", "author", "booktitle", "title", "year"].sort());
+  assert.strictEqual(out.booktitle, "NeurIPS");
+});
+
+test("keeps journal bibliographic fields and maps booktitle to journal", () => {
+  const entry = {
+    ENTRYTYPE: "article",
+    ID: "devlin2019",
+    author: "Devlin, Jacob",
+    title: "BERT",
+    booktitle: "North American Chapter of the Association for Computational Linguistics",
+    year: "2019",
+    volume: "1",
+    number: "2",
+    pages: "4171-4186",
+    doi: "10.18653/v1/N19-1423",
+  };
+  const out = lib.applyBibStyle(entry);
+  assert.deepStrictEqual(Object.keys(out).sort(), ["ENTRYTYPE", "ID", "author", "journal", "title", "year", "volume", "number", "pages"].sort());
+  assert.strictEqual(out.journal, "NAACL");
+});
+
+test("does not mutate the input", () => {
+  const entry = { ENTRYTYPE: "inproceedings", ID: "x", author: "A", title: "T", booktitle: "NeurIPS", year: "2020", doi: "10.1/x" };
+  lib.applyBibStyle(entry);
+  assert.strictEqual(entry.doi, "10.1/x");
+});
+
+console.log("\n── completeAuthors ──");
+
+test("replaces 'and others' with a complete verified author list", () => {
+  const entry = { ID: "vaswani2017", author: "Vaswani, Ashish and others" };
+  const found = { author: "Vaswani, Ashish and Shazeer, Noam and Parmar, Niki" };
+  const out = lib.completeAuthors(entry, found);
+  assert.strictEqual(out.author, found.author);
+});
+
+test("does not invent authors when no verified match is available", () => {
+  const entry = { ID: "x", author: "Smith, Alice and others" };
+  const out = lib.completeAuthors(entry, null);
+  assert.strictEqual(out.author, "Smith, Alice and others");
+});
+
 console.log("\n── titleSimilarity ──");
 
 test("identical titles score 100", () => {

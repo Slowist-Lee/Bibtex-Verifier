@@ -1,4 +1,4 @@
-(() => {
+﻿(() => {
   "use strict";
 
   const B = window.BibLib;
@@ -419,7 +419,6 @@
       renderEntryCard(r);
 
       updateSummary();
-      updateAuthorPills();
       updatePreview();
     }
 
@@ -450,7 +449,6 @@
           if (at >= 0) results[at] = r; else results.push(r);
           renderEntryCard(r);
           updateSummary();
-          updateAuthorPills();
           updatePreview();
         }
         pendingRetry.length = 0;
@@ -588,10 +586,8 @@
         const origAttr = encodeURIComponent(d.original || "");
         const foundAttr = encodeURIComponent(d.found || "");
 
-        // Apply author truncation for display (suggested only)
-        const maxA = parseInt(optMaxAuthors.value) || 0;
-        const displaySuggestion = (d.field === "author" && maxA > 0 && currentAction !== "custom") ? truncateAuthors(suggestionText, maxA) : suggestionText;
-        const authorMatchHidden = (d.field === "author" && maxA > 0 && displaySuggestion.trim() === (d.original || "").trim());
+        const displaySuggestion = suggestionText;
+        const authorMatchHidden = (d.field === "author" && displaySuggestion.trim() === (d.original || "").trim());
 
         return `<tr class="diff-row${authorMatchHidden ? " author-match-hidden" : ""}" data-entry="${idx}" data-field="${esc(d.field)}" data-action="${currentAction}"
           data-enrichment="${isEnrichment ? "1" : ""}"
@@ -1170,130 +1166,6 @@
     $$(".summary-badge").forEach(b => b.classList.add("active"));
   }
 
-  // ─── Author truncation ────────────────────────────────────────────
-  function truncateAuthors(authorStr, max) {
-    if (!authorStr || max <= 0) return authorStr;
-    // BibTeX authors are separated by " and "
-    const authors = authorStr.split(/\s+and\s+/i);
-    if (authors.length <= max) return authorStr;
-    return authors.slice(0, max).join(" and ") + " and others";
-  }
-
-  function updateAuthorPills() {
-    const max = parseInt(optMaxAuthors.value) || 0;
-
-    // Update existing API author diff rows
-    $$('.diff-row[data-field="author"]:not([data-injected])').forEach(row => {
-      const foundVal = decodeURIComponent(row.getAttribute("data-found-val") || "");
-      const origVal = decodeURIComponent(row.getAttribute("data-original-val") || "");
-      const sugPill = row.querySelector(".pill-suggested");
-      if (sugPill && row.dataset.action !== "custom") {
-        const truncated = max > 0 ? truncateAuthors(foundVal, max) : foundVal;
-        sugPill.textContent = truncated;
-        if (truncated.trim() === origVal.trim()) {
-          row.classList.add("author-match-hidden");
-        } else {
-          row.classList.remove("author-match-hidden");
-        }
-      }
-    });
-
-    // Remove any previously injected rows
-    $$('.diff-row[data-injected]').forEach(row => {
-      const card = row.closest(".entry-card");
-      const idx = parseInt(row.dataset.entry);
-      row.remove();
-      // Clean up empty diff tables
-      if (card) {
-        const diffTable = card.querySelector(".diff-table:not(.fields-table)");
-        if (diffTable && diffTable.querySelectorAll(".diff-row").length === 0) {
-          diffTable.remove();
-        }
-        // Unhide plain author row
-        const plainRow = card.querySelector('.field-row-plain[data-field="author"]');
-        if (plainRow) plainRow.classList.remove("author-match-hidden");
-      }
-      // Clean up fieldEdits injected entry
-      if (fieldEdits[idx]?.author?._injected) {
-        delete fieldEdits[idx].author;
-      }
-    });
-
-    // For entries WITHOUT an existing author diff row, inject if truncation differs
-    if (max > 0) {
-      $$(".entry-card").forEach(card => {
-        const idx = parseInt(card.dataset.index);
-        const entry = parsedEntries[idx];
-        const res = results[idx];
-        if (!entry || !entry.author) return;
-        /* No lookup match — don't inject truncation as if it were an API suggestion row */
-        if (res && res.status === "not_found") return;
-
-        const existingRow = card.querySelector('.diff-row[data-field="author"]:not(.field-row-plain)');
-        if (existingRow) return; // Already has an API diff row
-
-        const authorCount = entry.author.split(/\s+and\s+/i).length;
-        if (authorCount <= max) return;
-
-        const truncated = truncateAuthors(entry.author, max);
-        if (truncated.trim() === entry.author.trim()) return;
-
-        // Set fieldEdits for this entry
-        if (!fieldEdits[idx]) fieldEdits[idx] = {};
-        fieldEdits[idx].author = { action: "found", value: truncated, _injected: true };
-
-        // Find or create the diff table
-        let diffTable = card.querySelector(".diff-table:not(.fields-table)");
-        if (!diffTable) {
-          const tableHTML = `<table class="diff-table"><tr><th>Field</th><th>Your Value</th><th>Suggested</th><th></th></tr></table>`;
-          const insertAfter = card.querySelector(".review-hint") || card.querySelector(".not-found-hint") || card.querySelector(".entry-header");
-          insertAfter.insertAdjacentHTML("afterend", tableHTML);
-          diffTable = card.querySelector(".diff-table:not(.fields-table)");
-        }
-
-        const origAttr = encodeURIComponent(entry.author);
-        const foundAttr = encodeURIComponent(truncated);
-        const rowHTML = `<tr class="diff-row" data-entry="${idx}" data-field="author" data-action="found"
-          data-enrichment="" data-injected="1"
-          data-found-val="${foundAttr}"
-          data-original-val="${origAttr}">
-          <td class="field-name"><span class="field-name-pill">author</span></td>
-          <td class="val-col val-col-original">
-            <button class="choice-pill pill-original"
-                    data-entry="${idx}" data-field="author" data-action="original" data-val="${esc(entry.author)}"
-                    title="Keep your value">${esc(entry.author)}</button>
-          </td>
-          <td class="val-col val-col-suggested">
-            <span class="choice-pill pill-suggested active"
-                    contenteditable="true" spellcheck="false"
-                    data-entry="${idx}" data-field="author" data-action="found" data-val="${esc(truncated)}"
-                    title="Use suggested value (click to select, edit to customize)">${esc(truncated)}</span>
-          </td>
-          <td class="field-actions-mini">
-            <button class="fa-btn-x" title="Remove field"
-                    data-entry="${idx}" data-field="author" data-action="remove" data-val="">
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            </button>
-          </td>
-        </tr>`;
-        const headerRow = diffTable.querySelector("tr");
-        headerRow.insertAdjacentHTML("afterend", rowHTML);
-
-        // Also hide the author from "Other fields" if it exists there
-        const plainAuthorRow = card.querySelector('.field-row-plain[data-field="author"]');
-        if (plainAuthorRow) plainAuthorRow.classList.add("author-match-hidden");
-      });
-    } else {
-      // max is 0 (All) — unhide any hidden plain author rows
-      $$('.field-row-plain[data-field="author"].author-match-hidden').forEach(row => {
-        row.classList.remove("author-match-hidden");
-      });
-    }
-
-    // Update card statuses
-    updateCardStatuses();
-  }
-
   function updateCardStatuses() {
     $$(".entry-card").forEach(card => {
       const idx = parseInt(card.dataset.index);
@@ -1376,9 +1248,6 @@
         }
       }
 
-      if (s.maxAuthors > 0 && out.author && r.status !== "not_found") {
-        out.author = truncateAuthors(out.author, s.maxAuthors);
-      }
 
       if (s.preferPublished) {
         const venue = (out.journal || out.booktitle || "").toLowerCase();
@@ -1394,7 +1263,7 @@
           }
         }
       }
-      return s.cleanNotes ? B.cleanEntryNotes(out) : out;
+      return B.applyBibStyle(B.completeAuthors(s.cleanNotes ? B.cleanEntryNotes(out) : out, r.suggested));
     }).filter(Boolean);
 
     if (s.removeDuplicates) {
@@ -1545,7 +1414,6 @@
   const optRemoveDuplicates = $("#opt-remove-duplicates");
   const optRemoveNotFound = $("#opt-remove-notfound");
   const optCleanNotes = $("#opt-clean-notes");
-  const optMaxAuthors = $("#opt-max-authors");
   const optPreferPublished = $("#opt-prefer-published");
   const dedupCriteriaWrap = $("#dedup-criteria-wrap");
 
@@ -1569,10 +1437,6 @@
 
   [optRemoveNotFound, optCleanNotes, optPreferPublished].forEach(el =>
     el.addEventListener("change", updatePreview));
-  optMaxAuthors.addEventListener("change", () => {
-    updateAuthorPills();
-    updatePreview();
-  });
   $$('input[name="dedup-criteria"]').forEach(el =>
     el.addEventListener("change", updatePreview));
 
@@ -1582,7 +1446,6 @@
       dedupBy: (document.querySelector('input[name="dedup-criteria"]:checked') || {}).value || "title",
       removeNotFound: optRemoveNotFound.checked,
       cleanNotes: optCleanNotes.checked,
-      maxAuthors: parseInt(optMaxAuthors.value) || 0,
       preferPublished: optPreferPublished.checked,
     };
   }
@@ -1845,7 +1708,7 @@
       },
       {
         title: "Settings",
-        body: "Use the <strong>gear</strong> in the bottom bar (above the dimmed area) to open settings: download options (for example removing not-found rows), author limits, and more. Try toggles here; press <strong>Next</strong> when you’re done exploring.",
+        body: "Use the <strong>gear</strong> in the bottom bar (above the dimmed area) to open settings: download options (for example removing not-found rows) and more. Try toggles here; press <strong>Next</strong> when you’re done exploring.",
         target: "#settings-toggle",
         panelTop: true,
         onEnter: () => {
