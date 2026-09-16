@@ -664,6 +664,10 @@
     "ieee symposium on security and privacy": "IEEE S&P",
     "acm conference on computer and communications security": "CCS",
     "international world wide web conference": "WWW",
+    "conference on machine learning and systems": "MLSys",
+    "machine learning and systems": "MLSys",
+    "ieee/acm international symposium on code generation and optimization": "CGO",
+    "international symposium on code generation and optimization": "CGO",
   };
 
   function abbreviateVenue(name) {

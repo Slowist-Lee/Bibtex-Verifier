@@ -142,10 +142,22 @@
 
     const ssMatch = await attemptStep(() => searchSSMatch(title));
     if (ssMatch && B.titleSimilarity(title, ssMatch.title || "") >= B.MIN_TITLE_SIM) {
+      // Semantic Scholar often indexes ML conference papers by their arXiv
+      // preprint. Prefer a published Crossref/OpenAlex record when it is the
+      // same paper, so ICLR/NeurIPS/MLSys-style entries are not downgraded to
+      // arXiv.
+      if (!B.isPreprint(ssMatch)) return ssMatch;
+
       const crCandidates = (await attemptStep(() => searchCrossref(title))) || [];
       const crMatch = B.bestMatch(crCandidates, title);
-      if (crMatch && B.isSamePaper(ssMatch, crMatch))
+      if (crMatch && !B.isPreprint(crMatch) && B.isSamePaper(ssMatch, crMatch))
         return B.mergeMetadata(ssMatch, crMatch);
+
+      const oaCandidates = (await attemptStep(() => searchOpenAlex(title))) || [];
+      const oaMatch = B.bestMatch(oaCandidates, title);
+      if (oaMatch && !B.isPreprint(oaMatch) && B.isSamePaper(ssMatch, oaMatch))
+        return B.mergeMetadata(ssMatch, oaMatch);
+
       return ssMatch;
     }
 
