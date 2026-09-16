@@ -668,6 +668,8 @@
     "machine learning and systems": "MLSys",
     "ieee/acm international symposium on code generation and optimization": "CGO",
     "international symposium on code generation and optimization": "CGO",
+    "usenix symposium on operating systems design and implementation": "OSDI",
+    "operating systems design and implementation": "OSDI",
   };
 
   function abbreviateVenue(name) {
