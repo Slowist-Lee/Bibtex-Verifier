@@ -670,6 +670,8 @@
     "international symposium on code generation and optimization": "CGO",
     "usenix symposium on operating systems design and implementation": "OSDI",
     "operating systems design and implementation": "OSDI",
+    "international conference on architectural support for programming languages and operating systems": "ASPLOS",
+    "architectural support for programming languages and operating systems": "ASPLOS",
   };
 
   function abbreviateVenue(name) {
