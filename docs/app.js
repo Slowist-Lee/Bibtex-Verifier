@@ -1,4 +1,4 @@
-﻿(() => {
+(() => {
   "use strict";
 
   const B = window.BibLib;
@@ -9,7 +9,7 @@
   const SS_SEARCH = "https://api.semanticscholar.org/graph/v1/paper/search";
   const SS_FIELDS = "title,authors,year,venue,publicationVenue,externalIds";
   const OPENALEX_API = "https://api.openalex.org/works";
-  const OPENALEX_FIELDS = "title,display_name,publication_year,doi,authorships,primary_location,biblio,id";
+  const OPENALEX_FIELDS = "title,display_name,publication_year,doi,type,authorships,primary_location,biblio,id";
   const MAX_RETRIES = 4;
   const RETRY_BASE_MS = 1500;
 
@@ -121,7 +121,9 @@
     // Title-only query keeps the "only titles leave your machine" guarantee —
     // no `mailto`, so nothing personally identifying is sent.
     const data = await fetchJSON(OPENALEX_API, {
-      search: title, per_page: "5", select: OPENALEX_FIELDS,
+      filter: `title.search:${title}`,
+      per_page: "5",
+      select: OPENALEX_FIELDS,
     });
     return (data?.results || []).map(B.openAlexToStandard);
   }
@@ -140,43 +142,83 @@
       }
     };
 
-    const ssMatch = await attemptStep(() => searchSSMatch(title));
-    if (ssMatch && B.titleSimilarity(title, ssMatch.title || "") >= B.MIN_TITLE_SIM) {
+    const titleVariants = B.lookupTitleVariants(title);
+
+    // Search both the full title and its base title. Some databases index
+    // "Base Title: Subtitle" as "Base Title" only, while others keep the
+    // subtitle; querying both avoids weak matches for unrelated papers.
+    const ssMatches = [];
+    for (const variant of titleVariants) {
+      const match = await attemptStep(() => searchSSMatch(variant));
+      if (match) ssMatches.push(match);
+    }
+    const ssMatch = B.bestMatch(ssMatches, title);
+
+    if (ssMatch && B.lookupTitleSimilarity(title, ssMatch.title || "") >= B.MIN_TITLE_SIM) {
       // Semantic Scholar often indexes ML conference papers by their arXiv
       // preprint. Prefer a published Crossref/OpenAlex record when it is the
-      // same paper, so ICLR/NeurIPS/MLSys-style entries are not downgraded to
-      // arXiv.
-      if (!B.isPreprint(ssMatch)) return ssMatch;
-
-      const crCandidates = (await attemptStep(() => searchCrossref(title))) || [];
+      // same paper, so ICLR/NeurIPS/MLSys-style entries are not downgraded.
+      const crCandidates = [];
+      for (const variant of titleVariants) {
+        const records = (await attemptStep(() => searchCrossref(variant))) || [];
+        crCandidates.push(...records);
+      }
       const crMatch = B.bestMatch(crCandidates, title);
-      if (crMatch && !B.isPreprint(crMatch) && B.isSamePaper(ssMatch, crMatch))
-        return B.mergeMetadata(ssMatch, crMatch);
 
-      const oaCandidates = (await attemptStep(() => searchOpenAlex(title))) || [];
+      const oaCandidates = [];
+      for (const variant of titleVariants) {
+        const records = (await attemptStep(() => searchOpenAlex(variant))) || [];
+        oaCandidates.push(...records);
+      }
       const oaMatch = B.bestMatch(oaCandidates, title);
-      if (oaMatch && !B.isPreprint(oaMatch) && B.isSamePaper(ssMatch, oaMatch))
-        return B.mergeMetadata(ssMatch, oaMatch);
 
+      if (!B.isPreprint(ssMatch)) {
+        // Semantic Scholar may return "N. D. Last" while the user's habit uses
+        // complete names. Cross-check other sources for the same paper and
+        // keep the fuller list; initials alone never replace full names.
+        let enriched = ssMatch;
+        for (const candidate of [crMatch, oaMatch]) {
+          if (!candidate || !B.isSamePaper(enriched, candidate)) continue;
+          const next = B.mergeMetadata(enriched, candidate);
+          if (B.preferredAuthor(enriched.author, next.author) === next.author) enriched = next;
+        }
+        return enriched;
+      }
+
+      const crPublished = crMatch && !B.isPreprint(crMatch) && B.isSamePaper(ssMatch, crMatch);
+      const oaPublished = oaMatch && !B.isPreprint(oaMatch) && B.isSamePaper(ssMatch, oaMatch);
+      if (crPublished) return B.mergeMetadata(ssMatch, crMatch);
+      if (oaPublished) return B.mergeMetadata(ssMatch, oaMatch);
       return ssMatch;
     }
 
-    const crCandidates = (await attemptStep(() => searchCrossref(title))) || [];
+    const crCandidates = [];
+    for (const variant of titleVariants) {
+      const records = (await attemptStep(() => searchCrossref(variant))) || [];
+      crCandidates.push(...records);
+    }
     const crMatch = B.bestMatch(crCandidates, title);
     if (crMatch) return crMatch;
 
-    const oaCandidates = (await attemptStep(() => searchOpenAlex(title))) || [];
+    const oaCandidates = [];
+    for (const variant of titleVariants) {
+      const records = (await attemptStep(() => searchOpenAlex(variant))) || [];
+      oaCandidates.push(...records);
+    }
     const oaMatch = B.bestMatch(oaCandidates, title);
     if (oaMatch) return oaMatch;
 
-    const ssCandidates = (await attemptStep(() => searchSSSearch(title))) || [];
+    const ssCandidates = [];
+    for (const variant of titleVariants) {
+      const records = (await attemptStep(() => searchSSSearch(variant))) || [];
+      ssCandidates.push(...records);
+    }
     const ssSearchMatch = B.bestMatch(ssCandidates, title);
     if (ssSearchMatch) return ssSearchMatch;
 
     if (transient) throw new TransientLookupError("inconclusive lookup");
     return null;
   }
-
   // ─── Theme ─────────────────────────────────────────────────────────
   const root = document.documentElement;
   const themeToggle = document.getElementById("theme-toggle");
@@ -306,9 +348,43 @@
   });
 
   async function handleFile(file) {
-    if (!file.name.endsWith(".bib")) { alert("Please upload a .bib file."); return; }
+    const lower = file.name.toLowerCase();
+    if (lower.endsWith(".zip")) return handleProjectZip(file);
+    if (!lower.endsWith(".bib")) { alert("Please upload a .bib file or a .zip project."); return; }
     const content = await file.text();
     startVerificationFromContent(content, "Reading file...");
+  }
+
+  async function handleProjectZip(file) {
+    if (typeof JSZip === "undefined") {
+      alert("Project ZIP support is unavailable because JSZip did not load. Please refresh and try again.");
+      return;
+    }
+    try {
+      const zip = await JSZip.loadAsync(file);
+      const files = Object.values(zip.files).filter(f => !f.dir);
+      const bibFiles = files.filter(f => f.name.toLowerCase().endsWith(".bib"));
+      if (!bibFiles.length) {
+        alert("No .bib file was found in this project ZIP.");
+        return;
+      }
+      const bibContent = (await Promise.all(bibFiles.map(f => f.async("string")))).join("\n\n");
+      const sourceFiles = files.filter(f => !f.name.toLowerCase().endsWith(".bib") && B.isProjectTextFile(f.name));
+      const unusedKeys = new Set();
+      let scannedFileCount = 0;
+      for (const f of sourceFiles) {
+        const text = await f.async("string");
+        for (const key of B.extractCitationKeys(text)) unusedKeys.add(key);
+        scannedFileCount++;
+      }
+      startVerificationFromContent(bibContent, "Reading project...", {
+        unusedKeys,
+        hasProjectScan: scannedFileCount > 0,
+      });
+    } catch (err) {
+      console.error("Failed to read project ZIP:", err);
+      alert("Could not read this project ZIP. Make sure it is a valid .zip archive.");
+    }
   }
 
   // ─── Paste handling ───────────────────────────────────────────────
@@ -321,7 +397,7 @@
     startVerificationFromContent(content, "Parsing pasted content...");
   });
 
-  function startVerificationFromContent(content, statusMsg) {
+  function startVerificationFromContent(content, statusMsg, options = {}) {
     onboardingResumeAfterCurrentRun =
       pendingOnboardingResumeClick ||
       document.body.dataset.onboardingStage === "verify" ||
@@ -363,6 +439,12 @@
     syncPreviewPanelCollapsed();
 
     parsedEntries = B.parseBib(content);
+
+    if (options?.unusedKeys) {
+      parsedEntries.forEach(entry => {
+        entry._unused = options.unusedKeys.has((entry.ID || "").toLowerCase());
+      });
+    }
 
     if (!parsedEntries.length) {
       alert("No BibTeX entries found. Make sure the content contains valid @type{key, ...} entries.");
@@ -491,7 +573,7 @@
       entry_id: entry.ID || "",
       entry_type: entry.ENTRYTYPE || "",
       title: entry.title || "",
-      status,
+      status: entry._unused ? "unused" : status,
       title_score: titleScore,
       field_diffs: fieldDiffs,
       suggested,
@@ -512,7 +594,7 @@
 
   // ─── Rendering ────────────────────────────────────────────────────
   function statusLabel(s) {
-    return { verified: "Verified", updated: "Auto-Updated", needs_review: "Needs Review", not_found: "Not Found" }[s] || s;
+    return { verified: "Verified", updated: "Auto-Updated", needs_review: "Needs Review", not_found: "Not Found", unused: "Unused" }[s] || s;
   }
 
   function cardMatchesFilter(card) {
@@ -563,6 +645,7 @@
     card.dataset.status = r.status;
     card.dataset.index = r.index;
     if (r.duplicate_of) card.dataset.duplicate = "true";
+    card.dataset.unused = r.status === "unused" ? "true" : "false";
 
     const idx = r.index;
     if (!fieldEdits[idx]) fieldEdits[idx] = {};
@@ -575,6 +658,7 @@
     const hasSuggestion =
       r.status === "updated" ||
       r.status === "needs_review" ||
+      r.status === "unused" ||
       (r.status === "verified" && hasDiffs);
 
     if (hasDiffs) {
@@ -680,6 +764,11 @@
     if (r.duplicate_of)
       duplicateHTML = `<div class="duplicate-row">Duplicate of <strong>${esc(r.duplicate_of)}</strong></div>`;
 
+    let unusedHintHTML = "";
+    if (r.status === "unused") {
+      unusedHintHTML = `<div class="unused-hint">This entry was not cited in any scanned project file. Unused status takes priority over lookup status, so field suggestions remain available below.</div>`;
+    }
+
     let reviewHintHTML = "";
     if (r.status === "needs_review" && r.found_title) {
       reviewHintHTML = `<div class="review-hint">The closest database record may not be the paper you meant
@@ -752,7 +841,7 @@
           <span class="status-tag tag-${r.status}">${statusLabel(r.status)}</span>
         </div>
       </div>
-    </div>${duplicateHTML}${reviewHintHTML}${notFoundHintHTML}${diffHTML}${actionsHTML}${searchLinks}`;
+    </div>${duplicateHTML}${unusedHintHTML}${reviewHintHTML}${notFoundHintHTML}${diffHTML}${actionsHTML}${searchLinks}`;
 
     // Cache normalized search haystack so search filtering stays cheap.
     card.dataset.searchHay = `${(r.entry_id || "").toLowerCase()} ${B.stripLatex(r.title || "").toLowerCase()}`;
@@ -1164,7 +1253,7 @@
   });
 
   function updateSummary() {
-    const c = { verified: 0, updated: 0, needs_review: 0, not_found: 0 };
+    const c = { verified: 0, updated: 0, needs_review: 0, not_found: 0, unused: 0 };
     let dupes = 0;
     results.forEach(r => {
       c[r.status] = (c[r.status] || 0) + 1;
@@ -1175,7 +1264,8 @@
     $(".badge-review .summary-count").textContent = c.needs_review;
     $(".badge-notfound .summary-count").textContent = c.not_found;
     $(".badge-duplicates .summary-count").textContent = dupes;
-    $$(".summary-badge").forEach(b => b.classList.add("active"));
+    $(".badge-unused .summary-count").textContent = c.unused;
+    $(".summary-badge").forEach(b => b.classList.add("active"));
   }
 
   function updateCardStatuses() {
@@ -1226,7 +1316,7 @@
   }
 
   function updateDynamicSummary() {
-    const c = { verified: 0, updated: 0, needs_review: 0, not_found: 0 };
+    const c = { verified: 0, updated: 0, needs_review: 0, not_found: 0, unused: 0 };
     let dupes = 0;
     $$(".entry-card").forEach(card => {
       const status = card.dataset.status;
@@ -1238,6 +1328,7 @@
     $(".badge-review .summary-count").textContent = c.needs_review;
     $(".badge-notfound .summary-count").textContent = c.not_found;
     $(".badge-duplicates .summary-count").textContent = dupes;
+    $(".badge-unused .summary-count").textContent = c.unused;
   }
 
   // ─── Live preview ────────────────────────────────────────────────
@@ -1275,7 +1366,10 @@
           }
         }
       }
-      return B.applyBibStyle(B.completeAuthors(s.cleanNotes ? B.cleanEntryNotes(out) : out, r.suggested));
+      return B.applyBibStyle(B.completeAuthors(
+        B.upgradeMiscEntry(s.cleanNotes ? B.cleanEntryNotes(out) : out, r.found),
+        r.suggested
+      ));
     }).filter(Boolean);
 
     if (s.removeDuplicates) {

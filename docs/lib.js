@@ -224,13 +224,107 @@
    * verified record when the record is clearly the same author list plus the
    * omitted authors. This never invents authors.
    */
+  function isTruncatedAuthor(authorStr) {
+    return /\s+and\s+others\b|\bet\.?\s+al\.?/i.test(String(authorStr || ""));
+  }
+
+  /**
+   * A given name has real detail only when it contains something longer than
+   * an initial (for example, "Ashish"). Initials such as "N. D." are not an
+   * error, but they are also not a complete author name for the user's style.
+   */
+  function hasGivenDetail(name) {
+    let given = "";
+    const text = String(name || "").trim();
+    if (text.includes(",")) given = text.split(",")[1] || "";
+    else {
+      const parts = text.split(/\s+/).filter(Boolean);
+      if (parts.length > 1) given = parts.slice(0, -1).join(" ");
+    }
+    given = stripLatex(given).replace(/[^A-Za-z.\-\s']/g, " ").trim();
+    if (!given) return false;
+    return given.split(/\s+/).some(token => {
+      const letters = token.replace(/[^A-Za-z]/g, "");
+      return letters.length > 1;
+    });
+  }
+
+  /**
+   * True when every substantive name in the list uses initials only. We never
+   * treat this as a verification error, but we also never use it to replace a
+   * fuller author list.
+   */
+  function isAbbreviatedAuthors(authorStr) {
+    const parts = authorParts(authorStr);
+    return parts.length > 0 && parts.every(part => !hasGivenDetail(part));
+  }
+
+  function authorDetailScore(authorStr) {
+    const parts = authorParts(authorStr);
+    if (!parts.length) return -1;
+    let score = 0;
+    for (const part of parts) {
+      const text = String(part).trim();
+      const comma = text.includes(",");
+      const given = comma ? (text.split(",")[1] || "")
+        : (text.split(/\s+/).slice(0, -1).join(" "));
+      const tokens = stripLatex(given).split(/\s+/).filter(Boolean);
+      for (const token of tokens) {
+        const letters = token.replace(/[^A-Za-z]/g, "");
+        if (letters.length > 1) score += 3;
+        else if (letters.length === 1) score += 1;
+      }
+    }
+    score += Math.min(parts.length, 10) * 0.1;
+    if (isTruncatedAuthor(authorStr)) score -= 5;
+    return score;
+  }
+
+  /**
+   * Prefer a verified full author list over initials. Initials are accepted as
+   * equivalent for comparison, but never replace a name such as "Noam Shazeer".
+   */
+  function preferredAuthor(a, b) {
+    a = a || ""; b = b || "";
+    if (!a) return b;
+    if (!b) return a;
+    const as = extractLastNames(a), bs = extractLastNames(b);
+    if (!as.size || !bs.size) return a;
+
+    const larger = as.size >= bs.size ? as : bs;
+    const smaller = as.size >= bs.size ? bs : as;
+    let inter = 0;
+    for (const name of smaller) if (larger.has(name)) inter++;
+
+    // Same list up to initials: choose the fuller, non-truncated version.
+    if (inter === Math.max(as.size, bs.size)) {
+      const ta = isTruncatedAuthor(a), tb = isTruncatedAuthor(b);
+      if (ta !== tb) return ta ? b : a;
+      const da = authorDetailScore(a), db = authorDetailScore(b);
+      if (Math.abs(da - db) >= 0.5) return da > db ? a : b;
+      return a;
+    }
+
+    // One list is a strict superset of the other: use the longer verified list.
+    if (inter === smaller.size && larger.size > smaller.size) {
+      const ta = isTruncatedAuthor(a), tb = isTruncatedAuthor(b);
+      const longer = as.size >= bs.size ? a : b;
+      const shorter = as.size >= bs.size ? b : a;
+      if (ta !== tb) return ta ? shorter : longer;
+      return longer;
+    }
+
+    return a;
+  }
+
   function completeAuthors(entry, found) {
     const out = { ...entry };
     const foundAuthor = found && found.author ? found.author : "";
     const parts = authorParts(out.author);
 
     if (!parts.length) {
-      if (foundAuthor && !/\\band\\s+others\\b|\\bet\\.?\\s+al\\.?/i.test(foundAuthor)) out.author = foundAuthor;
+      if (foundAuthor && !isTruncatedAuthor(foundAuthor) && !isAbbreviatedAuthors(foundAuthor))
+        out.author = foundAuthor;
       return out;
     }
 
@@ -243,11 +337,104 @@
     const foundLastNames = new Set(extractLastNames(foundAuthor));
     const complete =
       foundParts.length >= parts.length &&
+      !isTruncatedAuthor(foundAuthor) &&
+      !isAbbreviatedAuthors(foundAuthor) &&
       [...origLastNames].every(name => foundLastNames.has(name));
     if (complete) out.author = foundAuthor;
     return out;
   }
 
+  function recordIsConference(record) {
+    if (!record) return false;
+    const type = (record._type || "").toLowerCase();
+    if (type.includes("proceedings") || type.includes("conference")) return true;
+    if (type.includes("journal") || type.includes("article")) return false;
+    const venue = (record.journal || record.booktitle || "").toLowerCase();
+    if (/\b(?:proceedings|conference|symposium|workshop|annual meeting)\b/.test(venue)) return true;
+    return false;
+  }
+
+  function recordIsJournal(record) {
+    if (!record) return false;
+    const type = (record._type || "").toLowerCase();
+    if (type.includes("journal-article") || type === "article" || type.includes("journal")) return true;
+    if (type.includes("proceedings") || type.includes("conference")) return false;
+    const venue = (record.journal || record.booktitle || "").toLowerCase();
+    if (/\b(?:journal|transactions|surveys|letters|review)\b/.test(venue)) return true;
+    return false;
+  }
+
+  function extractArxivId(record) {
+    if (!record) return "";
+    if (record._arxiv_id) return String(record._arxiv_id);
+    const doi = (record.doi || "").toLowerCase();
+    const doiMatch = /(?:^|\/)arxiv\.(\d{4}\.\d{4,5})(?:v\d+)?$/.exec(doi);
+    if (doiMatch) return doiMatch[1];
+    const url = (record.url || "").toLowerCase();
+    const urlMatch = /arxiv\.org\/abs\/(\d{4}\.\d{4,5})(?:v\d+)?$/.exec(url);
+    if (urlMatch) return urlMatch[1];
+    return "";
+  }
+
+  function preferredArxivJournal(entry, found) {
+    const exactRe = /arxiv\s+preprint\s+arxiv:/i;
+    const foundJournal = found?.journal || "";
+    const id = extractArxivId(found) || extractArxivId(entry);
+
+    if (exactRe.test(foundJournal)) return foundJournal;
+    if (id) return `arXiv preprint arXiv:${id}`;
+
+    const fromEntry = entry?.journal || entry?.howpublished || "";
+    if (exactRe.test(fromEntry)) return fromEntry;
+
+    const venue = foundJournal || found?.booktitle || "";
+    if (/\barxiv\b/i.test(venue)) return venue;
+    if (/\barxiv\b/i.test(fromEntry)) return fromEntry;
+    return venue;
+  }
+
+  /**
+   * Upgrade a `@misc` entry when a verified record supplies a real venue.
+   * arXiv records are treated as `@article` entries with
+   * `journal = {arXiv preprint arXiv:<id>}`, matching the user's style.
+   */
+  function inferEntryType(entry, found) {
+    if (!entry || (entry.ENTRYTYPE || "misc").toLowerCase() !== "misc") return "misc";
+    if (!found) return "misc";
+    if (isPreprint(found)) return "article";
+    if (recordIsConference(found)) return "inproceedings";
+    if (recordIsJournal(found)) return "article";
+    return "misc";
+  }
+
+  function upgradeMiscEntry(entry, found) {
+    const out = { ...entry };
+    if (!found || (out.ENTRYTYPE || "misc").toLowerCase() !== "misc") return out;
+    const type = inferEntryType(out, found);
+    if (type === "misc") return out;
+
+    if (type === "article" && isPreprint(found)) {
+      const journal = preferredArxivJournal(out, found);
+      if (!journal) return out;
+      out.ENTRYTYPE = "article";
+      out.journal = journal;
+      delete out.howpublished;
+      delete out.booktitle;
+      return out;
+    }
+
+    const venue = found.journal || found.booktitle || "";
+    if (!venue && !(out.booktitle || out.journal)) return out;
+    out.ENTRYTYPE = type;
+    if (type === "inproceedings") {
+      if (!out.booktitle && venue) out.booktitle = abbreviateVenue(venue);
+      delete out.journal;
+    } else if (type === "article") {
+      if (venue) out.journal = abbreviateVenue(venue);
+      delete out.booktitle;
+    }
+    return out;
+  }
   /**
    * Apply the requested bibliography style:
    * - use abbreviations for common venues, but leave rare venues unchanged;
@@ -273,14 +460,14 @@
     if (out.booktitle) out.booktitle = abbreviateVenue(out.booktitle);
     if (out.journal) out.journal = abbreviateVenue(out.journal);
 
-    if (isConference || isJournal) {
-      const allowed = new Set(isConference
-        ? ["author", "title", "booktitle", "year"]
-        : ["author", "title", "journal", "year", "volume", "number", "pages"]);
-      for (const key of Object.keys(out)) {
-        if (key === "ENTRYTYPE" || key === "ID" || key.startsWith("_")) continue;
-        if (!allowed.has(key)) delete out[key];
-      }
+    const allowed = isConference
+      ? new Set(["author", "title", "booktitle", "year"])
+      : isJournal
+        ? new Set(["author", "title", "journal", "year", "volume", "number", "pages"])
+        : new Set(["author", "title", "year", "howpublished"]);
+    for (const key of Object.keys(out)) {
+      if (key === "ENTRYTYPE" || key === "ID" || key.startsWith("_")) continue;
+      if (!allowed.has(key)) delete out[key];
     }
 
     return out;
@@ -301,6 +488,50 @@
 
   function titleSimilarity(a, b) {
     return tokenSortRatio(a.toLowerCase().trim(), b.toLowerCase().trim());
+  }
+
+  function baseTitle(title) {
+    const text = stripLatex(title || "").trim();
+    const colon = text.indexOf(":");
+    return colon > 0 ? text.slice(0, colon).trim() : text;
+  }
+
+  function lookupTitleVariants(title) {
+    const full = stripLatex(title || "").trim();
+    const base = baseTitle(full);
+    const variants = [full];
+    if (base && base.length >= 8 && normalizeTitle(base) !== normalizeTitle(full))
+      variants.push(base);
+    return [...new Set(variants)];
+  }
+
+  /**
+   * Similarity for lookup/matching. A full title and the same title's base
+   * (before the colon) refer to the same work; this prevents "Base: Long
+   * Subtitle" from losing to a weakly similar paper when one database indexes
+   * only the base title.
+   */
+  function lookupTitleSimilarity(a, b) {
+    const na = normalizeTitle(a), nb = normalizeTitle(b);
+    if (!na && !nb) return 100;
+    if (!na || !nb) return 0;
+    if (na === nb) return 100;
+    const baseA = normalizeTitle(baseTitle(a));
+    const baseB = normalizeTitle(baseTitle(b));
+    if (baseA.length >= 10 && baseA === nb) return 100;
+    if (baseB.length >= 10 && baseB === na) return 100;
+    return tokenSortRatio(na, nb);
+  }
+
+  function titleMatchRank(a, b) {
+    const na = normalizeTitle(a), nb = normalizeTitle(b);
+    if (!na || !nb) return 0;
+    if (na === nb) return 2;
+    const baseA = normalizeTitle(baseTitle(a));
+    const baseB = normalizeTitle(baseTitle(b));
+    if ((baseA.length >= 10 && baseA === nb) ||
+        (baseB.length >= 10 && baseB === na)) return 1;
+    return 0;
   }
 
   // ─── Normalization helpers ───────────────────────────────────────────
@@ -349,7 +580,7 @@
   function compareEntry(original, found) {
     const origTitle = original.title || "";
     const foundTitle = found.title || "";
-    const titleScore = tokenSortRatio(normalizeTitle(origTitle), normalizeTitle(foundTitle));
+    const titleScore = lookupTitleSimilarity(origTitle, foundTitle);
 
     if (titleScore < TITLE_MATCH_THRESHOLD) {
       return { status: "needs_review", title_score: titleScore, field_diffs: [], suggested: found };
@@ -415,7 +646,7 @@
 
     const origTitle = original.title || "";
     const foundTitle = merged.title || "";
-    const titleScore = tokenSortRatio(normalizeTitle(origTitle), normalizeTitle(foundTitle));
+    const titleScore = lookupTitleSimilarity(origTitle, foundTitle);
     const fieldDiffs = [];
     const enrichments = [];
 
@@ -476,6 +707,7 @@
       publisher: item.publisher || "",
       url: item.URL || "",
       _source: "crossref",
+      _type: item.type || "",
     };
   }
 
@@ -504,6 +736,7 @@
       publisher: "",
       url: ext.DOI ? `https://doi.org/${ext.DOI}` : "",
       _source: "semantic_scholar",
+      _arxiv_id: ext.ArXiv || "",
     };
   }
 
@@ -535,6 +768,7 @@
       publisher: source.host_organization_name || "",
       url: doi ? `https://doi.org/${doi}` : (work.id || ""),
       _source: "openalex",
+      _type: work.type || "",
     };
   }
 
@@ -573,6 +807,9 @@
     if (venue === "corr" || venue.includes("computing research repository")) return true;
     const url = (record.url || "").toLowerCase();
     if (url.includes("arxiv.org")) return true;
+    // An arXiv ID alone is a preprint; an arXiv ID alongside a real published
+    // venue should stay a published record.
+    if (!venue && record._arxiv_id) return true;
     return false;
   }
 
@@ -588,7 +825,7 @@
   }
 
   function isSamePaper(a, b) {
-    if (titleSimilarity(a.title || "", b.title || "") < 85) return false;
+    if (lookupTitleSimilarity(a.title || "", b.title || "") < 85) return false;
     if (a.year && b.year) {
       const ya = parseInt(a.year, 10), yb = parseInt(b.year, 10);
       if (Number.isFinite(ya) && Number.isFinite(yb) &&
@@ -616,15 +853,20 @@
         if (secondary[f]) merged[f] = secondary[f];
       }
     }
+    merged._arxiv_id = primary._arxiv_id || secondary._arxiv_id || "";
+    merged.author = preferredAuthor(merged.author || primary.author, secondary.author || "");
     merged._source = `${primary._source || ""}+${secondary._source || ""}`;
     return merged;
   }
 
   function bestMatch(candidates, queryTitle) {
-    let best = null, bestScore = 0;
+    let best = null, bestScore = 0, bestRank = -1;
     for (const c of candidates) {
-      const s = titleSimilarity(queryTitle, c.title || "");
-      if (s > bestScore) { bestScore = s; best = c; }
+      const s = lookupTitleSimilarity(queryTitle, c.title || "");
+      const rank = titleMatchRank(queryTitle, c.title || "");
+      if (rank > bestRank || (rank === bestRank && s > bestScore)) {
+        bestScore = s; bestRank = rank; best = c;
+      }
     }
     return best && bestScore >= MIN_TITLE_SIM ? best : null;
   }
@@ -796,6 +1038,46 @@
     });
   }
 
+  // ─── Project citation scanning ───────────────────────────────────────
+  const PROJECT_TEXT_EXTENSIONS = new Set([
+    ".tex", ".aux", ".md", ".markdown", ".rmd", ".txt", ".sty", ".cls",
+    ".html", ".htm", ".ipynb", ".json", ".yaml", ".yml", ".rst", ".py", ".js",
+  ]);
+
+  // LaTeX/BibLaTeX citation commands. The command name is matched broadly
+  // after \\cite (for example \\citep, \\citet, and \\citeauthor), plus the
+  // common prefixed BibLaTeX variants such as \\autocite and \\parencite.
+  const CITATION_COMMAND_RE = /(?:\\(?:Cite|cite|nocite|fullcite|bibentry)[a-zA-Z]*\*?|\\(?:auto|foot|paren|text|smart)cite[a-zA-Z]*\*?)(?:\[[^\]]*\])*\s*\{([^}]*)}/g;
+  const PANDOC_CITATION_RE = /\[@([^\]]+)\]/g;
+
+  function extractCitationKeys(text) {
+    const keys = new Set();
+    const addRawKeys = (raw) => {
+      String(raw || "")
+        .split(/[,;]+/)
+        .forEach((part) => {
+          const key = part.trim().replace(/^[{\[@']+|[}\]']+$/g, "").trim();
+          if (key) keys.add(key.toLowerCase());
+        });
+    };
+
+    for (const match of String(text || "").matchAll(CITATION_COMMAND_RE))
+      addRawKeys(match[1]);
+    for (const match of String(text || "").matchAll(PANDOC_CITATION_RE))
+      addRawKeys(match[1]);
+
+    return keys;
+  }
+
+  function isProjectTextFile(filePath) {
+    const normalized = String(filePath || "").replace(/\\/g, "/");
+    if (/(^|\/)__MACOSX(\/|$)/i.test(normalized)) return false;
+    const name = normalized.split("/").pop() || "";
+    const dot = name.lastIndexOf(".");
+    if (!name || name.startsWith(".") || dot < 1) return false;
+    return PROJECT_TEXT_EXTENSIONS.has(name.slice(dot).toLowerCase());
+  }
+
   // ─── Public API ──────────────────────────────────────────────────────
   exports.TITLE_MATCH_THRESHOLD = TITLE_MATCH_THRESHOLD;
   exports.MIN_TITLE_SIM = MIN_TITLE_SIM;
@@ -825,11 +1107,23 @@
   exports.bestMatch = bestMatch;
   exports.abbreviateVenue = abbreviateVenue;
   exports.expandVenue = expandVenue;
+  exports.isTruncatedAuthor = isTruncatedAuthor;
+  exports.isAbbreviatedAuthors = isAbbreviatedAuthors;
+  exports.preferredAuthor = preferredAuthor;
+  exports.baseTitle = baseTitle;
+  exports.lookupTitleVariants = lookupTitleVariants;
+  exports.lookupTitleSimilarity = lookupTitleSimilarity;
+  exports.titleMatchRank = titleMatchRank;
+  exports.inferEntryType = inferEntryType;
+  exports.upgradeMiscEntry = upgradeMiscEntry;
   exports.completeAuthors = completeAuthors;
   exports.applyBibStyle = applyBibStyle;
   exports.cleanNote = cleanNote;
   exports.cleanEntryNotes = cleanEntryNotes;
   exports.NOTE_JUNK_KEYS = NOTE_JUNK_KEYS;
   exports.entryMatchesQuery = entryMatchesQuery;
+  exports.PROJECT_TEXT_EXTENSIONS = PROJECT_TEXT_EXTENSIONS;
+  exports.extractCitationKeys = extractCitationKeys;
+  exports.isProjectTextFile = isProjectTextFile;
 
 })(typeof module !== "undefined" && module.exports ? module.exports : (window.BibLib = {}));

@@ -2363,3 +2363,9 @@ code {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
+
+/* Unused-entry status */
+.badge-unused .summary-dot { background: var(--yellow); }
+.summary-badge.active.badge-unused { background: var(--yellow-bg); color: var(--yellow); border-color: var(--yellow-border); }
+[data-theme="light"] .summary-badge.active.badge-unused { border-color: rgba(202, 138, 4, 0.28); }
+.tag-unused { background: var(--yellow-bg); color: var(--yellow); }
