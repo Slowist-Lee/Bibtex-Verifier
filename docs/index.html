@@ -33,14 +33,13 @@
     "operatingSystem": "Any",
     "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
     "browserRequirements": "Requires a modern web browser with JavaScript enabled",
-    "featureList": ["BibTeX verification", "Hallucinated reference detection", "DOI enrichment", "Duplicate detection", "Unused entry detection", "Field-by-field diff", "Dark/light theme"],
+    "featureList": ["BibTeX verification", "Hallucinated reference detection", "DOI enrichment", "Duplicate detection", "Field-by-field diff", "Dark/light theme"],
     "isAccessibleForFree": true,
     "license": "https://opensource.org/licenses/MIT"
   }
   </script>
 
   <link rel="stylesheet" href="style.css" />
-  <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
 </head>
 <body>
   <div class="page-wrap">
@@ -88,9 +87,9 @@
     <div class="tab-panel active" id="tab-upload">
       <div class="upload-zone">
         <span class="icon">&#128462;</span>
-        <span class="label">Drop your .bib or .zip project here</span>
+        <span class="label">Drop your .bib file here or click to browse</span>
         <p>Standard BibTeX &amp; BibLaTeX &middot; Processed entirely in your browser</p>
-        <input type="file" id="file-input" accept=".bib,.zip" />
+        <input type="file" id="file-input" accept=".bib" />
       </div>
     </div>
 
@@ -119,11 +118,6 @@
         <button type="button" class="summary-badge badge-notfound active" data-filter="not_found">
           <span class="summary-dot"></span>
           <span class="summary-label">Not Found</span>
-          <span class="summary-count">0</span>
-        </button>
-            <button type="button" class="summary-badge badge-unused active" data-filter="unused">
-          <span class="summary-dot"></span>
-          <span class="summary-label">Unused</span>
           <span class="summary-count">0</span>
         </button>
         <button type="button" class="summary-badge badge-duplicates active" data-filter="duplicate">
